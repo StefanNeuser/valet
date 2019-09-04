@@ -12,7 +12,26 @@ class CraftValetDriver extends ValetDriver
      */
     public function serves($sitePath, $siteName, $uri)
     {
-        return is_dir($sitePath.'/craft');
+        return file_exists($sitePath.'/craft');
+    }
+
+    /**
+     * Determine the name of the directory where the front controller lives.
+     *
+     * @param  string  $sitePath
+     * @return string
+     */
+    public function frontControllerDirectory($sitePath)
+    {
+        $dirs = ['web', 'public'];
+
+        foreach ($dirs as $dir) {
+            if (is_dir($sitePath.'/'.$dir)) {
+                return $dir;
+            }
+        }
+        // Give up, and just return the default
+        return is_file($sitePath.'/craft') ? 'web' : 'public';
     }
 
     /**
@@ -25,7 +44,9 @@ class CraftValetDriver extends ValetDriver
      */
     public function isStaticFile($sitePath, $siteName, $uri)
     {
-        if ($this->isActualFile($staticFilePath = $sitePath.'/public'.$uri)) {
+        $frontControllerDirectory = $this->frontControllerDirectory($sitePath);
+
+        if ($this->isActualFile($staticFilePath = $sitePath.'/'.$frontControllerDirectory.$uri)) {
             return $staticFilePath;
         }
 
@@ -42,10 +63,149 @@ class CraftValetDriver extends ValetDriver
      */
     public function frontControllerPath($sitePath, $siteName, $uri)
     {
-        $_SERVER['SCRIPT_FILENAME'] = $sitePath.'/public/index.php';
-        $_SERVER['SERVER_NAME'] = $_SERVER['HTTP_HOST'];
-        $_SERVER['SCRIPT_NAME'] = '/index.php';
+        $frontControllerDirectory = $this->frontControllerDirectory($sitePath);
 
-        return $sitePath.'/public/index.php';
+        // Default index path
+        $indexPath = $sitePath.'/'.$frontControllerDirectory.'/index.php';
+        $scriptName = '/index.php';
+
+        // Check if the first URL segment matches any of the defined locales
+        $locales = [
+            'ar',
+            'ar_sa',
+            'bg',
+            'bg_bg',
+            'ca_es',
+            'cs',
+            'cy_gb',
+            'da',
+            'da_dk',
+            'de',
+            'de_at',
+            'de_ch',
+            'de_de',
+            'el',
+            'el_gr',
+            'en',
+            'en_as',
+            'en_au',
+            'en_bb',
+            'en_be',
+            'en_bm',
+            'en_bw',
+            'en_bz',
+            'en_ca',
+            'en_dsrt',
+            'en_dsrt_us',
+            'en_gb',
+            'en_gu',
+            'en_gy',
+            'en_hk',
+            'en_ie',
+            'en_in',
+            'en_jm',
+            'en_mh',
+            'en_mp',
+            'en_mt',
+            'en_mu',
+            'en_na',
+            'en_nz',
+            'en_ph',
+            'en_pk',
+            'en_sg',
+            'en_shaw',
+            'en_tt',
+            'en_um',
+            'en_us',
+            'en_us_posix',
+            'en_vi',
+            'en_za',
+            'en_zw',
+            'en_zz',
+            'es',
+            'es_cl',
+            'es_es',
+            'es_mx',
+            'es_us',
+            'es_ve',
+            'et',
+            'fi',
+            'fi_fi',
+            'fil',
+            'fr',
+            'fr_be',
+            'fr_ca',
+            'fr_ch',
+            'fr_fr',
+            'fr_ma',
+            'he',
+            'hr',
+            'hr_hr',
+            'hu',
+            'hu_hu',
+            'id',
+            'id_id',
+            'it',
+            'it_ch',
+            'it_it',
+            'ja',
+            'ja_jp',
+            'ko',
+            'ko_kr',
+            'lt',
+            'lv',
+            'ms',
+            'ms_my',
+            'nb',
+            'nb_no',
+            'nl',
+            'nl_be',
+            'nl_nl',
+            'nn',
+            'nn_no',
+            'no',
+            'pl',
+            'pl_pl',
+            'pt',
+            'pt_br',
+            'pt_pt',
+            'ro',
+            'ro_ro',
+            'ru',
+            'ru_ru',
+            'sk',
+            'sl',
+            'sr',
+            'sv',
+            'sv_se',
+            'th',
+            'th_th',
+            'tr',
+            'tr_tr',
+            'uk',
+            'vi',
+            'zh',
+            'zh_cn',
+            'zh_tw',
+        ];
+        $parts = explode('/', $uri);
+
+        if (count($parts) > 1 && in_array($parts[1], $locales)) {
+            $indexLocalizedPath = $sitePath.'/'.$frontControllerDirectory.'/'.$parts[1].'/index.php';
+
+            // Check if index.php exists in the localized folder, this is optional in Craft 3
+            if (file_exists($indexLocalizedPath)) {
+                $indexPath = $indexLocalizedPath;
+                $scriptName = '/'.$parts[1].'/index.php';
+            }
+        }
+
+        $_SERVER['SCRIPT_FILENAME'] = $indexPath;
+        $_SERVER['SERVER_NAME'] = $_SERVER['HTTP_HOST'];
+        $_SERVER['SCRIPT_NAME'] = $scriptName;
+        $_SERVER['PHP_SELF'] = $scriptName;
+        $_SERVER['DOCUMENT_ROOT'] = $sitePath.'/'.$frontControllerDirectory;
+
+        return $indexPath;
     }
 }

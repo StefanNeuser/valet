@@ -42,12 +42,19 @@ abstract class ValetDriver
      */
     public static function assign($sitePath, $siteName, $uri)
     {
-        $drivers = static::driversIn(VALET_HOME_PATH.'/Drivers');
+        $drivers = [];
+
+        if ($customSiteDriver = static::customSiteDriver($sitePath)) {
+            $drivers[] = $customSiteDriver;
+        }
+
+        $drivers = array_merge($drivers, static::driversIn(VALET_HOME_PATH.'/Drivers'));
 
         $drivers[] = 'LaravelValetDriver';
 
         $drivers[] = 'WordPressValetDriver';
         $drivers[] = 'BedrockValetDriver';
+        $drivers[] = 'ContaoValetDriver';
         $drivers[] = 'SymfonyValetDriver';
         $drivers[] = 'CraftValetDriver';
         $drivers[] = 'StatamicValetDriver';
@@ -56,9 +63,13 @@ abstract class ValetDriver
         $drivers[] = 'SculpinValetDriver';
         $drivers[] = 'JigsawValetDriver';
         $drivers[] = 'KirbyValetDriver';
-        $drivers[] = 'ContaoValetDriver';
         $drivers[] = 'KatanaValetDriver';
         $drivers[] = 'JoomlaValetDriver';
+        $drivers[] = 'DrupalValetDriver';
+        $drivers[] = 'Concrete5ValetDriver';
+        $drivers[] = 'Typo3ValetDriver';
+        $drivers[] = 'NeosValetDriver';
+        $drivers[] = 'Magento2ValetDriver';
 
         $drivers[] = 'BasicValetDriver';
 
@@ -69,6 +80,23 @@ abstract class ValetDriver
                 return $driver;
             }
         }
+    }
+
+    /**
+     * Get the custom driver class from the site path, if one exists.
+     *
+     * @param  string  $sitePath
+     * @return string
+     */
+    public static function customSiteDriver($sitePath)
+    {
+        if (! file_exists($sitePath.'/LocalValetDriver.php')) {
+            return;
+        }
+
+        require_once $sitePath.'/LocalValetDriver.php';
+
+        return 'LocalValetDriver';
     }
 
     /**
@@ -85,12 +113,14 @@ abstract class ValetDriver
 
         $drivers = [];
 
-        foreach (scandir($path) as $file) {
-            if ($file !== 'ValetDriver.php' && strpos($file, 'ValetDriver') !== false) {
-                require_once $path.'/'.$file;
+        $dir = new RecursiveDirectoryIterator($path);
+        $iterator = new RecursiveIteratorIterator($dir);
+        $regex = new RegexIterator($iterator, '/^.+ValetDriver\.php$/i', RecursiveRegexIterator::GET_MATCH);
 
-                $drivers[] = basename($file, '.php');
-            }
+        foreach ($regex as $file) {
+            require_once $file[0];
+
+            $drivers[] = basename($file[0], '.php');
         }
 
         return $drivers;
@@ -118,15 +148,25 @@ abstract class ValetDriver
      */
     public function serveStaticFile($staticFilePath, $sitePath, $siteName, $uri)
     {
-        $extension = pathinfo($staticFilePath)['extension'];
+        /**
+         * Back story...
+         *
+         * PHP docs *claim* you can set default_mimetype = "" to disable the default
+         * Content-Type header. This works in PHP 7+, but in PHP 5.* it sends an
+         * *empty* Content-Type header, which is significantly different than
+         * sending *no* Content-Type header.
+         *
+         * However, if you explicitly set a Content-Type header, then explicitly
+         * remove that Content-Type header, PHP seems to not re-add the default.
+         *
+         * I have a hard time believing this is by design and not coincidence.
+         *
+         * Burn. it. all.
+         */
+        header('Content-Type: text/html');
+        header_remove('Content-Type');
 
-        $mimes = require(__DIR__.'/../mimes.php');
-
-        $mime = isset($mimes[$extension]) ? $mimes[$extension] : 'application/octet-stream';
-
-        header('Content-Type: '. $mime);
-
-        readfile($staticFilePath);
+        header('X-Accel-Redirect: /' . VALET_STATIC_PREFIX . $staticFilePath);
     }
 
     /**
@@ -139,4 +179,36 @@ abstract class ValetDriver
     {
         return ! is_dir($path) && file_exists($path);
     }
+
+    /**
+     * Load server environment variables if available.
+     * Processes any '*' entries first, and then adds site-specific entries
+     *
+     * @param  string  $sitePath
+     * @param  string  $siteName
+     * @return void
+     */
+    public function loadServerEnvironmentVariables($sitePath, $siteName)
+    {
+        $varFilePath = $sitePath . '/.valet-env.php';
+        if (! file_exists($varFilePath)) {
+            return;
+        }
+
+        $variables = include $varFilePath;
+
+        $variablesToSet = isset($variables['*']) ? $variables['*'] : [];
+
+        if (isset($variables[$siteName])) {
+            $variablesToSet = array_merge($variablesToSet, $variables[$siteName]);
+        }
+
+        foreach ($variablesToSet as $key => $value) {
+            if (! is_string($key)) continue;
+            $_SERVER[$key] = $value;
+            $_ENV[$key] = $value;
+            putenv($key . '=' . $value);
+        }
+    }
+
 }

@@ -2,16 +2,14 @@
 
 namespace Valet;
 
-use Exception;
 use DomainException;
-use Symfony\Component\Process\Process;
 
 class PhpFpm
 {
-    public $brew, $cli, $files;
+    var $brew, $cli, $files;
 
-    public $taps = [
-        'homebrew/dupes', 'homebrew/versions', 'homebrew/homebrew-php'
+    var $taps = [
+        'homebrew/homebrew-core'
     ];
 
     /**
@@ -22,7 +20,7 @@ class PhpFpm
      * @param  Filesystem  $files
      * @return void
      */
-    public function __construct(Brew $brew, CommandLine $cli, Filesystem $files)
+    function __construct(Brew $brew, CommandLine $cli, Filesystem $files)
     {
         $this->cli = $cli;
         $this->brew = $brew;
@@ -30,16 +28,14 @@ class PhpFpm
     }
 
     /**
-     * Install and configure DnsMasq.
+     * Install and configure PhpFpm.
      *
      * @return void
      */
-    public function install()
+    function install()
     {
-        if (! $this->brew->installed('php70') &&
-            ! $this->brew->installed('php56') &&
-            ! $this->brew->installed('php55')) {
-            $this->brew->ensureInstalled('php70', $this->taps);
+        if (! $this->brew->hasInstalledPhp()) {
+            $this->brew->ensureInstalled('php', [], $this->taps);
         }
 
         $this->files->ensureDirExists('/usr/local/var/log', user());
@@ -50,18 +46,34 @@ class PhpFpm
     }
 
     /**
-     * Update the PHP FPM configuration to use the current user.
+     * Update the PHP FPM configuration.
      *
      * @return void
      */
-    public function updateConfiguration()
+    function updateConfiguration()
     {
+        info('Updating PHP configuration...');
+
         $contents = $this->files->get($this->fpmConfigPath());
 
         $contents = preg_replace('/^user = .+$/m', 'user = '.user(), $contents);
         $contents = preg_replace('/^group = .+$/m', 'group = staff', $contents);
+        $contents = preg_replace('/^listen = .+$/m', 'listen = '.VALET_HOME_PATH.'/valet.sock', $contents);
+        $contents = preg_replace('/^;?listen\.owner = .+$/m', 'listen.owner = '.user(), $contents);
+        $contents = preg_replace('/^;?listen\.group = .+$/m', 'listen.group = staff', $contents);
+        $contents = preg_replace('/^;?listen\.mode = .+$/m', 'listen.mode = 0777', $contents);
 
         $this->files->put($this->fpmConfigPath(), $contents);
+
+
+        $contents = $this->files->get(__DIR__.'/../stubs/php-memory-limits.ini');
+
+        $destFile = dirname($this->fpmConfigPath());
+        $destFile = str_replace('/php-fpm.d', '', $destFile);
+        $destFile .= '/conf.d/php-memory-limits.ini';
+        $this->files->ensureDirExists(dirname($destFile), user());
+
+        $this->files->putAsUser($destFile, $contents);
     }
 
     /**
@@ -69,10 +81,8 @@ class PhpFpm
      *
      * @return void
      */
-    public function restart()
+    function restart()
     {
-        $this->stop();
-
         $this->brew->restartLinkedPhp();
     }
 
@@ -81,9 +91,12 @@ class PhpFpm
      *
      * @return void
      */
-    public function stop()
+    function stop()
     {
-        $this->brew->stopService('php55', 'php56', 'php70');
+        call_user_func_array(
+            [$this->brew, 'stopService'],
+            Brew::SUPPORTED_PHP_VERSIONS
+        );
     }
 
     /**
@@ -91,16 +104,70 @@ class PhpFpm
      *
      * @return string
      */
-    public function fpmConfigPath()
+    function fpmConfigPath()
     {
-        if ($this->brew->linkedPhp() === 'php70') {
-            return '/usr/local/etc/php/7.0/php-fpm.d/www.conf';
-        } elseif ($this->brew->linkedPhp() === 'php56') {
-            return '/usr/local/etc/php/5.6/php-fpm.conf';
-        } elseif ($this->brew->linkedPhp() === 'php55') {
-            return '/usr/local/etc/php/5.5/php-fpm.conf';
-        } else {
-            throw new DomainException('Unable to find php-fpm config.');
+        $version = $this->brew->linkedPhp();
+
+        $versionNormalized = preg_replace(
+            '/php@?(\d)\.?(\d)/',
+            '$1.$2',
+            $version === 'php' ? Brew::LATEST_PHP_VERSION : $version
+        );
+
+        return $versionNormalized === '5.6'
+            ? '/usr/local/etc/php/5.6/php-fpm.conf'
+            : "/usr/local/etc/php/${versionNormalized}/php-fpm.d/www.conf";
+    }
+
+    /**
+     * Only stop running php services
+     */
+    function stopRunning()
+    {
+        $this->brew->stopService(
+            $this->brew->getRunningServices()
+                ->filter(function ($service) {
+                    return substr($service, 0, 3) === 'php';
+                })
+                ->all()
+        );
+    }
+
+    /**
+     * Use a specific version of php
+     *
+     * @param $version
+     * @return string
+     */
+    function useVersion($version)
+    {
+        // If passed php7.2 or php72 formats, convert to php@7.2 format:
+        $version = preg_replace('/(php)([0-9+])(?:.)?([0-9+])/i', '$1@$2.$3', $version);
+
+        if (!$this->brew->supportedPhpVersions()->contains($version)) {
+            throw new DomainException(
+                sprintf(
+                    'Valet doesn\'t support PHP version: %s (try something like \'php7.2\' instead)',
+                    $version
+                )
+            );
         }
+
+        // Install the relevant formula if not already installed
+        $this->brew->ensureInstalled($version);
+
+        // Unlink the current php if there is one
+        if ($this->brew->hasLinkedPhp()) {
+            $currentVersion = $this->brew->getLinkedPhpFormula();
+            info(sprintf('Unlinking current version: %s', $currentVersion));
+            $this->brew->unlink($currentVersion);
+        }
+
+        info(sprintf('Linking new version: %s', $version));
+        $this->brew->link($version, true);
+
+        $this->install();
+
+        return $version;
     }
 }

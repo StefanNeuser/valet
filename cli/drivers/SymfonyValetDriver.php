@@ -13,7 +13,9 @@ class SymfonyValetDriver extends ValetDriver
     public function serves($sitePath, $siteName, $uri)
     {
         return (file_exists($sitePath.'/web/app_dev.php') || file_exists($sitePath.'/web/app.php')) &&
-               (file_exists($sitePath.'/bin/symfony_requirements'));
+               (file_exists($sitePath.'/app/AppKernel.php')) || (file_exists($sitePath.'/public/index.php')) &&
+               (file_exists($sitePath.'/src/Kernel.php'))
+            ;
     }
 
     /**
@@ -27,6 +29,8 @@ class SymfonyValetDriver extends ValetDriver
     public function isStaticFile($sitePath, $siteName, $uri)
     {
         if ($this->isActualFile($staticFilePath = $sitePath.'/web/'.$uri)) {
+            return $staticFilePath;
+        } elseif ($this->isActualFile($staticFilePath = $sitePath.'/public/'.$uri)) {
             return $staticFilePath;
         }
 
@@ -46,6 +50,8 @@ class SymfonyValetDriver extends ValetDriver
         if (file_exists($frontControllerPath = $sitePath.'/web/app_dev.php')) {
             return $frontControllerPath;
         } elseif (file_exists($frontControllerPath = $sitePath.'/web/app.php')) {
+            return $frontControllerPath;
+        } elseif (file_exists($frontControllerPath = $sitePath.'/public/index.php')) {
             return $frontControllerPath;
         }
     }

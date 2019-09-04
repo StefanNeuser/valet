@@ -9,7 +9,7 @@ class Configuration
     /**
      * Create a new Valet configuration class instance.
      *
-     * @param Filesystem $filesystem
+     * @param Filesystem $files
      */
     function __construct(Filesystem $files)
     {
@@ -27,6 +27,8 @@ class Configuration
         $this->createDriversDirectory();
         $this->createSitesDirectory();
         $this->createExtensionsDirectory();
+        $this->createLogDirectory();
+        $this->createCertificatesDirectory();
         $this->writeBaseConfiguration();
 
         $this->files->chown($this->path(), user());
@@ -39,6 +41,15 @@ class Configuration
      */
     function createConfigurationDirectory()
     {
+        $this->files->ensureDirExists(preg_replace('~/valet$~', '', VALET_HOME_PATH), user());
+
+        $oldPath = posix_getpwuid(fileowner(__FILE__))['dir'].'/.valet';
+
+        if ($this->files->isDir($oldPath)) {
+            rename($oldPath, VALET_HOME_PATH);
+            $this->prependPath(VALET_HOME_PATH.'/Sites');
+        }
+
         $this->files->ensureDirExists(VALET_HOME_PATH, user());
     }
 
@@ -82,13 +93,46 @@ class Configuration
     }
 
     /**
+     * Create the directory for Nginx logs.
+     *
+     * @return void
+     */
+    function createLogDirectory()
+    {
+        $this->files->ensureDirExists(VALET_HOME_PATH.'/Log', user());
+
+        $this->files->touch(VALET_HOME_PATH.'/Log/nginx-error.log');
+    }
+
+    /**
+     * Create the directory for SSL certificates.
+     *
+     * @return void
+     */
+    function createCertificatesDirectory()
+    {
+        $this->files->ensureDirExists(VALET_HOME_PATH.'/Certificates', user());
+    }
+
+    /**
      * Write the base, initial configuration for Valet.
      */
     function writeBaseConfiguration()
     {
         if (! $this->files->exists($this->path())) {
-            $this->write(['domain' => 'dev', 'paths' => []]);
+            $this->write(['tld' => 'test', 'paths' => []]);
         }
+
+        /**
+         * Migrate old configurations from 'domain' to 'tld'
+         */
+        $config = $this->read();
+
+        if (isset($config['tld'])) {
+            return;
+        }
+
+        $this->updateKey('tld', !empty($config['domain']) ? $config['domain'] : 'test');
     }
 
     /**
@@ -119,7 +163,7 @@ class Configuration
     }
 
     /**
-     * Add the given path to the configuration.
+     * Remove the given path from the configuration.
      *
      * @param  string  $path
      * @return void
@@ -183,7 +227,7 @@ class Configuration
      * @param  array  $config
      * @return void
      */
-    function write(array $config)
+    function write($config)
     {
         $this->files->putAsUser($this->path(), json_encode(
             $config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES

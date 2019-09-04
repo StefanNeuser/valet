@@ -25,7 +25,11 @@ class BasicValetDriver extends ValetDriver
      */
     public function isStaticFile($sitePath, $siteName, $uri)
     {
-        if (file_exists($staticFilePath = $sitePath.'/public'.$uri)) {
+        if (file_exists($staticFilePath = $sitePath.'/public'.rtrim($uri, '/').'/index.html')) {
+            return $staticFilePath;
+        } elseif (file_exists($staticFilePath = $sitePath.'/public'.rtrim($uri, '/').'/index.php')) {
+            return $staticFilePath;
+        } elseif (file_exists($staticFilePath = $sitePath.'/public'.$uri)) {
             return $staticFilePath;
         } elseif ($this->isActualFile($staticFilePath = $sitePath.$uri)) {
             return $staticFilePath;
@@ -44,6 +48,10 @@ class BasicValetDriver extends ValetDriver
      */
     public function frontControllerPath($sitePath, $siteName, $uri)
     {
+        $_SERVER['PHP_SELF']    = $uri;
+        $_SERVER['SERVER_ADDR'] = '127.0.0.1';
+        $_SERVER['SERVER_NAME'] = $_SERVER['HTTP_HOST'];
+		
         $dynamicCandidates = [
             $this->asActualFile($sitePath, $uri),
             $this->asPhpIndexFileInDirectory($sitePath, $uri),
@@ -54,20 +62,22 @@ class BasicValetDriver extends ValetDriver
             if ($this->isActualFile($candidate)) {
                 $_SERVER['SCRIPT_FILENAME'] = $candidate;
                 $_SERVER['SCRIPT_NAME'] = str_replace($sitePath, '', $candidate);
+                $_SERVER['DOCUMENT_ROOT'] = $sitePath;
                 return $candidate;
             }
         }
 
-        $fixedCandidates = [
-            $this->asRootPhpIndexFile($sitePath),
-            $this->asPublicPhpIndexFile($sitePath),
-            $this->asPublicHtmlIndexFile($sitePath),
+        $fixedCandidatesAndDocroots = [
+            $this->asRootPhpIndexFile($sitePath) => $sitePath,
+            $this->asPublicPhpIndexFile($sitePath) => $sitePath . '/public',
+            $this->asPublicHtmlIndexFile($sitePath) => $sitePath . '/public',
         ];
 
-        foreach ($fixedCandidates as $candidate) {
+        foreach ($fixedCandidatesAndDocroots as $candidate => $docroot) {
             if ($this->isActualFile($candidate)) {
                 $_SERVER['SCRIPT_FILENAME'] = $candidate;
                 $_SERVER['SCRIPT_NAME'] = '/index.php';
+                $_SERVER['DOCUMENT_ROOT'] = $docroot;
                 return $candidate;
             }
         }

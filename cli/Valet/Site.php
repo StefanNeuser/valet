@@ -23,6 +23,43 @@ class Site
     }
 
     /**
+     * Get the name of the site.
+     *
+     * @param  string|null $name
+     * @return string
+     */
+    private function getRealSiteName($name)
+    {
+        if (! is_null($name)) {
+            return $name;
+        }
+
+        if (is_string($link = $this->getLinkNameByCurrentDir())) {
+            return $link;
+        }
+
+        return basename(getcwd());
+    }
+
+    /**
+     * Get link name based on the current directory.
+     *
+     * @return null|string
+     */
+    private function getLinkNameByCurrentDir()
+    {
+        $count = count($links = $this->links()->where('path', getcwd()));
+
+        if ($count == 1) {
+            return $links->shift()['site'];
+        }
+
+        if ($count > 1) {
+            throw new DomainException("There are {$count} links related to the current directory, please specify the name: valet unlink <name>.");
+        }
+    }
+
+    /**
      * Get the real hostname for the given path, checking links.
      *
      * @param  string  $path
@@ -60,6 +97,64 @@ class Site
     }
 
     /**
+     * Pretty print out all links in Valet.
+     *
+     * @return \Illuminate\Support\Collection
+     */
+    function links()
+    {
+        $certsPath = VALET_HOME_PATH.'/Certificates';
+
+        $this->files->ensureDirExists($certsPath, user());
+
+        $certs = $this->getCertificates($certsPath);
+
+        return $this->getLinks($this->sitesPath(), $certs);
+    }
+
+    /**
+     * Get all certificates from config folder.
+     *
+     * @param string $path
+     * @return \Illuminate\Support\Collection
+     */
+    function getCertificates($path)
+    {
+        return collect($this->files->scandir($path))->filter(function ($value, $key) {
+            return ends_with($value, '.crt');
+        })->map(function ($cert) {
+            $certWithoutSuffix = substr($cert, 0, -4);
+            return substr($certWithoutSuffix, 0, strrpos($certWithoutSuffix, '.'));
+        })->flip();
+    }
+
+    /**
+     * Get list of links and present them formatted.
+     *
+     * @param string $path
+     * @param \Illuminate\Support\Collection $certs
+     * @return \Illuminate\Support\Collection
+     */
+    function getLinks($path, $certs)
+    {
+        $config = $this->config->read();
+
+        return collect($this->files->scandir($path))->mapWithKeys(function ($site) use ($path) {
+            return [$site => $this->files->readLink($path.'/'.$site)];
+        })->map(function ($path, $site) use ($certs, $config) {
+            $secured = $certs->has($site);
+            $url = ($secured ? 'https': 'http').'://'.$site.'.'.$config['tld'];
+
+            return [
+                'site' => $site,
+                'secured' => $secured ? ' X': '',
+                'url' => $url,
+                'path' => $path,
+            ];
+        });
+    }
+
+    /**
      * Unlink the given symbolic link.
      *
      * @param  string  $name
@@ -67,9 +162,13 @@ class Site
      */
     function unlink($name)
     {
+        $name = $this->getRealSiteName($name);
+
         if ($this->files->exists($path = $this->sitesPath().'/'.$name)) {
             $this->files->unlink($path);
         }
+
+        return $name;
     }
 
     /**
@@ -85,14 +184,18 @@ class Site
     }
 
     /**
-     * Resecure all currently secured sites with a fresh domain.
+     * Resecure all currently secured sites with a fresh tld.
      *
-     * @param  string  $oldDomain
-     * @param  string  $domain
+     * @param  string  $oldTld
+     * @param  string  $tld
      * @return void
      */
-    function resecureForNewDomain($oldDomain, $domain)
+    function resecureForNewTld($oldTld, $tld)
     {
+        if (! $this->files->exists($this->certificatesPath())) {
+            return;
+        }
+
         $secured = $this->secured();
 
         foreach ($secured as $url) {
@@ -100,7 +203,7 @@ class Site
         }
 
         foreach ($secured as $url) {
-            $this->secure(str_replace('.'.$oldDomain, '.'.$domain, $url));
+            $this->secure(str_replace('.'.$oldTld, '.'.$tld, $url));
         }
     }
 
@@ -113,7 +216,7 @@ class Site
     {
         return collect($this->files->scandir($this->certificatesPath()))
                     ->map(function ($file) {
-                        return str_replace(['.key', '.csr', '.crt'], '', $file);
+                        return str_replace(['.key', '.csr', '.crt', '.conf'], '', $file);
                     })->unique()->values()->all();
     }
 
@@ -127,13 +230,53 @@ class Site
     {
         $this->unsecure($url);
 
+        $this->files->ensureDirExists($this->caPath(), user());
+
         $this->files->ensureDirExists($this->certificatesPath(), user());
+
+        $this->createCa();
 
         $this->createCertificate($url);
 
         $this->files->putAsUser(
-            VALET_HOME_PATH.'/Caddy/'.$url, $this->buildSecureCaddyfile($url)
+            VALET_HOME_PATH.'/Nginx/'.$url, $this->buildSecureNginxServer($url)
         );
+    }
+
+    /**
+     * If CA and root certificates are nonexistent, crete them and trust the root cert.
+     *
+     * @return void
+     */
+    function createCa()
+    {
+        $caPemPath = $this->caPath().'/LaravelValetCASelfSigned.pem';
+        $caKeyPath = $this->caPath().'/LaravelValetCASelfSigned.key';
+
+        if ($this->files->exists($caKeyPath) && $this->files->exists($caPemPath)) {
+            return;
+        }
+
+        $oName = 'Laravel Valet CA Self Signed Organization';
+        $cName = 'Laravel Valet CA Self Signed CN';
+
+        if ($this->files->exists($caKeyPath)) {
+            $this->files->unlink($caKeyPath);
+        }
+        if ($this->files->exists($caPemPath)) {
+            $this->files->unlink($caPemPath);
+        }
+
+        $this->cli->run(sprintf(
+            'sudo security delete-certificate -c "%s" /Library/Keychains/System.keychain',
+            $cName
+        ));
+
+        $this->cli->runAsUser(sprintf(
+            'openssl req -new -newkey rsa:2048 -days 730 -nodes -x509 -subj "/C=/ST=/O=%s/localityName=/commonName=%s/organizationalUnitName=Developers/emailAddress=%s/" -keyout "%s" -out "%s"',
+            $oName, $cName, 'rootcertificate@laravel.valet', $caKeyPath, $caPemPath
+        ));
+        $this->trustCa($caPemPath);
     }
 
     /**
@@ -144,16 +287,35 @@ class Site
      */
     function createCertificate($url)
     {
+        $caPemPath = $this->caPath().'/LaravelValetCASelfSigned.pem';
+        $caKeyPath = $this->caPath().'/LaravelValetCASelfSigned.key';
+        $caSrlPath = $this->caPath().'/LaravelValetCASelfSigned.srl';
         $keyPath = $this->certificatesPath().'/'.$url.'.key';
         $csrPath = $this->certificatesPath().'/'.$url.'.csr';
         $crtPath = $this->certificatesPath().'/'.$url.'.crt';
+        $confPath = $this->certificatesPath().'/'.$url.'.conf';
 
+        $this->buildCertificateConf($confPath, $url);
         $this->createPrivateKey($keyPath);
-        $this->createSigningRequest($url, $keyPath, $csrPath);
+        $this->createSigningRequest($url, $keyPath, $csrPath, $confPath);
 
-        $this->cli->runAsUser(sprintf(
-            'openssl x509 -req -days 365 -in %s -signkey %s -out %s', $csrPath, $keyPath, $crtPath
+        $caSrlParam = '-CAserial ' . $caSrlPath;
+        if (! $this->files->exists($caSrlPath)) {
+            $caSrlParam .= ' -CAcreateserial';
+        }
+
+        $result = $this->cli->runAsUser(sprintf(
+            'openssl x509 -req -sha256 -days 730 -CA "%s" -CAkey "%s" %s -in "%s" -out "%s" -extensions v3_req -extfile "%s"',
+            $caPemPath, $caKeyPath, $caSrlParam, $csrPath, $crtPath, $confPath
         ));
+
+        // If cert could not be created using runAsUser(), use run().
+        if (strpos($result, 'Permission denied')) {
+            $this->cli->run(sprintf(
+                'openssl x509 -req -sha256 -days 730 -CA "%s" -CAkey "%s" %s -in "%s" -out "%s" -extensions v3_req -extfile "%s"',
+                $caPemPath, $caKeyPath, $caSrlParam, $csrPath, $crtPath, $confPath
+            ));
+        }
 
         $this->trustCertificate($crtPath);
     }
@@ -166,7 +328,7 @@ class Site
      */
     function createPrivateKey($keyPath)
     {
-        $this->cli->runAsUser(sprintf('openssl genrsa -out %s 2048', $keyPath));
+        $this->cli->runAsUser(sprintf('openssl genrsa -out "%s" 2048', $keyPath));
     }
 
     /**
@@ -175,11 +337,24 @@ class Site
      * @param  string  $keyPath
      * @return void
      */
-    function createSigningRequest($url, $keyPath, $csrPath)
+    function createSigningRequest($url, $keyPath, $csrPath, $confPath)
     {
         $this->cli->runAsUser(sprintf(
-            'openssl req -new -subj "/C=/ST=/O=/localityName=/commonName=%s/organizationalUnitName=/emailAddress=/" -key %s -out %s -passin pass:',
-            $url, $keyPath, $csrPath
+            'openssl req -new -key "%s" -out "%s" -subj "/C=/ST=/O=/localityName=/commonName=%s/organizationalUnitName=/emailAddress=%s%s/" -config "%s"',
+            $keyPath, $csrPath, $url, $url, '@laravel.valet', $confPath
+        ));
+    }
+
+    /**
+     * Trust the given root certificate file in the Mac Keychain.
+     *
+     * @param  string  $pemPath
+     * @return void
+     */
+    function trustCa($caPemPath)
+    {
+        $this->cli->run(sprintf(
+            'sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s', $caPemPath
         ));
     }
 
@@ -192,23 +367,36 @@ class Site
     function trustCertificate($crtPath)
     {
         $this->cli->run(sprintf(
-            'sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s', $crtPath
+            'sudo security add-trusted-cert -d -r trustAsRoot -k /Library/Keychains/System.keychain %s', $crtPath
         ));
     }
 
     /**
-     * Build the TLS secured Caddyfile for the given URL.
+     * Build the SSL config for the given URL.
      *
      * @param  string  $url
      * @return string
      */
-    function buildSecureCaddyfile($url)
+    function buildCertificateConf($path, $url)
+    {
+        $config = str_replace('VALET_DOMAIN', $url, $this->files->get(__DIR__.'/../stubs/openssl.conf'));
+        $this->files->putAsUser($path, $config);
+    }
+
+    /**
+     * Build the TLS secured Nginx server for the given URL.
+     *
+     * @param  string  $url
+     * @return string
+     */
+    function buildSecureNginxServer($url)
     {
         $path = $this->certificatesPath();
 
         return str_replace(
-            ['VALET_SITE', 'VALET_CERT', 'VALET_KEY'], [$url, $path.'/'.$url.'.crt', $path.'/'.$url.'.key'],
-            $this->files->get(__DIR__.'/../stubs/SecureCaddyfile')
+            ['VALET_HOME_PATH', 'VALET_SERVER_PATH', 'VALET_STATIC_PREFIX', 'VALET_SITE', 'VALET_CERT', 'VALET_KEY'],
+            [VALET_HOME_PATH, VALET_SERVER_PATH, VALET_STATIC_PREFIX, $url, $path.'/'.$url.'.crt', $path.'/'.$url.'.key'],
+            $this->files->get(__DIR__.'/../stubs/secure.valet.conf')
         );
     }
 
@@ -221,37 +409,20 @@ class Site
     function unsecure($url)
     {
         if ($this->files->exists($this->certificatesPath().'/'.$url.'.crt')) {
-            $this->files->unlink(VALET_HOME_PATH.'/Caddy/'.$url);
+            $this->files->unlink(VALET_HOME_PATH.'/Nginx/'.$url);
 
+            $this->files->unlink($this->certificatesPath().'/'.$url.'.conf');
             $this->files->unlink($this->certificatesPath().'/'.$url.'.key');
             $this->files->unlink($this->certificatesPath().'/'.$url.'.csr');
             $this->files->unlink($this->certificatesPath().'/'.$url.'.crt');
-
-            $this->cli->run(sprintf('sudo security delete-certificate -c "%s" -t', $url));
-        }
-    }
-
-    /**
-     * Get all of the log files for all sites.
-     *
-     * @param  array  $paths
-     * @return array
-     */
-    function logs($paths)
-    {
-        $files = collect();
-
-        foreach ($paths as $path) {
-            $files = $files->merge(collect($this->files->scandir($path))->map(function ($directory) use ($path) {
-                $logPath = $path.'/'.$directory.'/storage/logs/laravel.log';
-
-                if ($this->files->isDir(dirname($logPath))) {
-                    return $this->files->touchAsUser($logPath);
-                }
-            })->filter());
         }
 
-        return $files->values()->all();
+        $this->cli->run(sprintf('sudo security delete-certificate -c "%s" /Library/Keychains/System.keychain', $url));
+        $this->cli->run(sprintf('sudo security delete-certificate -c "*.%s" /Library/Keychains/System.keychain', $url));
+        $this->cli->run(sprintf(
+            'sudo security find-certificate -e "%s%s" -a -Z | grep SHA-1 | sudo awk \'{system("security delete-certificate -Z "$NF" /Library/Keychains/System.keychain")}\'',
+            $url, '@laravel.valet'
+        ));
     }
 
     /**
@@ -262,6 +433,16 @@ class Site
     function sitesPath()
     {
         return VALET_HOME_PATH.'/Sites';
+    }
+
+    /**
+     * Get the path to the Valet CA certificates.
+     *
+     * @return string
+     */
+    function caPath()
+    {
+        return VALET_HOME_PATH.'/CA';
     }
 
     /**

@@ -1,7 +1,12 @@
 <?php
 
+use Valet\Brew;
+use Valet\Valet;
 use Valet\Filesystem;
 use Valet\Configuration;
+use function Valet\user;
+use function Valet\resolve;
+use function Valet\swap;
 use Illuminate\Container\Container;
 
 class ConfigurationTest extends PHPUnit_Framework_TestCase
@@ -22,8 +27,10 @@ class ConfigurationTest extends PHPUnit_Framework_TestCase
 
     public function test_configuration_directory_is_created_if_it_doesnt_exist()
     {
-        $files = Mockery::mock(Filesystem::class);
+        $files = Mockery::mock(Filesystem::class.'[ensureDirExists,isDir]');
+        $files->shouldReceive('ensureDirExists')->once()->with(preg_replace('~/valet$~', '', VALET_HOME_PATH), user());
         $files->shouldReceive('ensureDirExists')->once()->with(VALET_HOME_PATH, user());
+        $files->shouldReceive('isDir')->once();
         swap(Filesystem::class, $files);
         resolve(Configuration::class)->createConfigurationDirectory();
     }
@@ -39,6 +46,14 @@ class ConfigurationTest extends PHPUnit_Framework_TestCase
         resolve(Configuration::class)->createDriversDirectory();
     }
 
+    public function test_log_directory_is_created_with_log_files_if_it_doesnt_exist()
+    {
+        $files = Mockery::mock(Filesystem::class.'[ensureDirExists,touch]');
+        $files->shouldReceive('ensureDirExists')->with(VALET_HOME_PATH.'/Log', user());
+        $files->shouldReceive('touch')->once();
+        swap(Filesystem::class, $files);
+        resolve(Configuration::class)->createLogDirectory();
+    }
 
     public function test_add_path_adds_a_path_to_the_paths_array_and_removes_duplicates()
     {
@@ -111,5 +126,16 @@ class ConfigurationTest extends PHPUnit_Framework_TestCase
         $config->shouldReceive('read')->once()->andReturn(['foo' => 'bar']);
         $config->shouldReceive('write')->once()->with(['foo' => 'bar', 'bar' => 'baz']);
         $config->updateKey('bar', 'baz');
+    }
+
+
+    public function test_trust_adds_the_sudoer_files()
+    {
+        $files = Mockery::mock(Filesystem::class.'[ensureDirExists,put]');
+        $files->shouldReceive('ensureDirExists')->with('/etc/sudoers.d')->twice();
+        $files->shouldReceive('put')->twice();
+        swap(Filesystem::class, $files);
+        resolve(Brew::class)->createSudoersEntry();
+        resolve(Valet::class)->createSudoersEntry();
     }
 }

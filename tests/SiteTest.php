@@ -3,6 +3,9 @@
 use Valet\Site;
 use Valet\Filesystem;
 use Valet\Configuration;
+use function Valet\user;
+use function Valet\resolve;
+use function Valet\swap;
 use Illuminate\Container\Container;
 
 class SiteTest extends PHPUnit_Framework_TestCase
@@ -66,11 +69,21 @@ class SiteTest extends PHPUnit_Framework_TestCase
     }
 
 
-    public function test_logs_method_returns_array_of_log_files()
+    public function test_certificates_trim_tld_for_custom_tlds()
     {
-        $logs = resolve(Site::class)->logs([__DIR__.'/test-directory-for-logs']);
-        $this->assertSame(__DIR__.'/test-directory-for-logs/project/storage/logs/laravel.log', $logs[0]);
-        unlink(__DIR__.'/test-directory-for-logs/project/storage/logs/laravel.log');
+        $files = Mockery::mock(Filesystem::class);
+        $files->shouldReceive('scandir')->once()->andReturn([
+            'threeletters.dev.crt',
+            'fiveletters.local.crt',
+        ]);
+
+        swap(Filesystem::class, $files);
+
+        $site = resolve(Site::class);
+        $certs = $site->getCertificates('fake-cert-path')->flip();
+
+        $this->assertEquals('threeletters', $certs->first());
+        $this->assertEquals('fiveletters', $certs->last());
     }
 }
 
